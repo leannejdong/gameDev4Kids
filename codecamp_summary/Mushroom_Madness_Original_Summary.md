@@ -4,6 +4,9 @@
 It's time to show students what they'll be creating this week!
 Click [here](https://play.codecampworld.com/play.html?game=UCWBNR6) to play Mushroom Madness!
 
+Mushroom Madness is an action-packed survival shooter where players control a character navigating a dynamic arena, dodging falling mushrooms, and blasting them away with star projectiles.
+
+
 ### How to Play
 * Move left and right by pointing where to go.
 * Tap on the screen to shoot a star.
