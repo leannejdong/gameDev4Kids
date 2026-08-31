@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Sumo Arena</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: #1b1d24;
+    display: flex; align-items: center; justify-content: center;
+    font-family: 'Segoe UI', sans-serif;
+  }
+  #wrap { text-align: center; }
+  canvas {
+    background: #2c2f3a;
+    border: 4px solid #4a4e5e;
+    border-radius: 8px;
+    touch-action: none;
+    cursor: crosshair;
+  }
+  #hint { color: #aab; margin-top: 8px; font-size: 14px; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="game" width="640" height="640"></canvas>
+  <div id="hint">Click / tap anywhere in the arena to move the Champion. Push the Challengers off the edge!</div>
+</div>
+
+<script>
+/* =========================================================================
+   SUMO ARENA — JS port of the CodeCampWorld block-code lesson
+   Sections below are labelled to match the teaching notes checkpoints:
+     1. The Countdown Begins   (Champion: Timer / Countdown / Labels)
+     2. The Challengers Emerge (Challenger: Direction / Start)
+     3. Not that easy!         (Challenger: Border AI)
+     4. That's a knock Out!    (Challenger: Defeat, game var `score`)
+     5. How many so far?       (Champion: Labels updated)
+     6. Onto the round         (Champion: Win)
+     7. A New Level            (Scene: Level 2)
+     8. Starting Over          (Champion: Countdown reset-on-loss)
+     9. High Score             (Champion: game var `highscore`, Labels)
+   ========================================================================= */
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height;
+
+/* ---------- GAME (global) VARIABLES ------------------------------------
+   These map to the "game variable" blocks in the notes: `score` and
+   `highscore` are shared across every actor/level, exactly like a
+   CodeCampWorld "game variable".
+   ------------------------------------------------------------------- */
+const game = {
+  score: 0,
+  highscore: 0,
+  level: 1,           // current scene index (1 = "Level 1", 2 = "Level 2")
+};
+
+/* Level definitions — stands in for the "Add scene" step in [A New Level] */
+const LEVELS = {
+  1: { challengers: 4 },
+  2: { challengers: 9 },   // "add a bunch of challengers" for the challenge
+};
+
+let lastTime = performance.now();
+let challengers = [];
+let champion;
+let popups = []; // brief "+1" feedback text when a challenger is knocked out
+
+/* =========================================================================
+   1. CHAMPION — [The Countdown Begins]
+   ========================================================================= */
+class Champion {
+  constructor() {
+    // ---- Setup: "make sure we don't accidentally fly outside the level" --
+    this.x = W / 2;
+    this.y = H / 2;
+    this.radius = 22;
+    this.speed = 600;          // matches the notes: champion speed = 600
+    this.targetX = this.x;
+    this.targetY = this.y;
+
+    // ---- Timer function: "When this actor is created" -------------------
+    // "Create a new Owner variable `timer` with default value 20"
+    this.timer = 20;
+  }
+
+  // ---- Countdown function: "Every 1 seconds" -----------------------------
+  countdownTick() {
+    this.timer -= 1;
+    if (this.timer < 1) {
+      // [Starting Over]: score resets and we drop back to Level 1
+      game.score = 0;
+      goToScene(1);
+    }
+  }
+
+  // ---- Move function: "When this actor is updated" -----------------------
+  // Constantly moves toward wherever the player last clicked/tapped.
+  // There is no "else" block in the notes, so it never stops chasing the
+  // last click point even after the mouse/finger is released.
+  update(dt) {
+    const dx = this.targetX - this.x;
+    const dy = this.targetY - this.y;
+    const dist = Math.hypot(dx, dy);
+    if (dist > 2) {
+      const step = Math.min(dist, this.speed * dt);
+      this.x += (dx / dist) * step;
+      this.y += (dy / dist) * step;
+    }
+
+    // Setup boundary clamp — never fly outside the arena
+    this.x = Math.max(this.radius, Math.min(W - this.radius, this.x));
+    this.y = Math.max(this.radius, Math.min(H - this.radius, this.y));
+  }
+
+  setTarget(x, y) {
+    this.targetX = x;
+    this.targetY = y;
+  }
+
+  // ---- Win function: "When this actor is updated" ------------------------
+  // "If count items in list (Find actors with name Challenger) < 1,
+  //  then go to next scene"
+  checkWin() {
+    if (challengers.length < 1) {
+      const next = game.level === 1 ? 2 : 1; // loop back after Level 2 clear
+      goToScene(next);
+    }
+  }
+
+  draw() {
+    ctx.beginPath();
+    ctx.fillStyle = '#ffcf40';
+    ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#a8781a';
+    ctx.lineWidth = 3;
+    ctx.stroke();
+  }
+
+  // ---- Labels function: "When this actor is updated (RUNS ALWAYS)" -------
+  drawLabels() {
+    ctx.textAlign = 'left';
+    ctx.font = '20px Segoe UI';
+
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(`Time left: ${Math.max(0, Math.ceil(this.timer))}`, 20, 30);
+
+    ctx.fillStyle = '#8be08b';
+    ctx.fillText(`Score: ${game.score}`, 20, 55);
+
+    ctx.fillStyle = '#7fd4ff';
+    ctx.fillText(`High Score: ${game.highscore}`, 20, 80);
+
+    // [Extra content] "High Score" actor logic:
+    // If score > highscore, then set highscore to score
+    if (game.score > game.highscore) {
+      game.highscore = game.score;
+    }
+  }
+}
+
+/* =========================================================================
+   2. CHALLENGER — [The Challengers Emerge!] / [Not that easy!] / [Knock Out!]
+   ========================================================================= */
+class Challenger {
+  constructor(x, y) {
+    this.x = x;
+    this.y = y;
+    this.radius = 18;
+    this.removed = false;
+
+    // ---- Start function: "When this actor is created" -------------------
+    // "Call direction"
+    this.spinSpeed = 0;   // degrees/sec — rotational "spin"
+    this.speed = 0;       // px/sec — forward travel speed
+    this.angle = Math.random() * Math.PI * 2;
+    this.borderPushX = 0;
+    this.borderPushY = 0;
+    this.knockVX = 0;     // knockback velocity from being shoved by the Champion
+    this.knockVY = 0;
+    this.direction();
+  }
+
+  // ---- Custom function `Direction` ---------------------------------------
+  // "Set spin speed to Random(-500,500) for this"
+  // "Set speed to Random(100,400) for this"
+  // "Do actions after some time [Random 0-4s]: Call the method direction"
+  direction() {
+    this.spinSpeed = rand(-500, 500);
+    this.speed = rand(100, 400);
+
+    clearTimeout(this._directionTimer);
+    this._directionTimer = setTimeout(() => {
+      if (!this.removed) this.direction();
+    }, rand(0, 4) * 1000);
+  }
+
+  // ---- Border AI (Boarder AI) function: "When the actor is updated" ------
+  // If too close to an edge (< 60px from it), push away from that edge.
+  boarderAI() {
+    const margin = 60;
+    // Horizontal edges
+    if (this.x < margin) {
+      this.borderPushX = this.speed / 100; // "xSpeed(this) * 100"
+    } else if (this.x > W - margin) {
+      this.borderPushX = -(this.speed / 100);
+    } else {
+      this.borderPushX = 0;
+    }
+    // Vertical edges
+    if (this.y < margin) {
+      this.borderPushY = this.speed / 100;
+    } else if (this.y > H - margin) {
+      this.borderPushY = -(this.speed / 100);
+    } else {
+      this.borderPushY = 0;
+    }
+  }
+
+  update(dt) {
+    // Check defeat FIRST, using the position left over from any collision
+    // push last frame. If we checked after Border AI below, Border AI would
+    // already have corrected an out-of-bounds position back inward before
+    // the check ever saw it — which is why knockouts never registered.
+    this.defeatCheck();
+    if (this.removed) return;
+
+    const knockSpeed = Math.hypot(this.knockVX, this.knockVY);
+
+    // While a strong shove is still carrying the Challenger, let it win
+    // over Border AI's edge-avoidance — otherwise Border AI cancels the
+    // push out almost immediately and a knockout becomes nearly impossible.
+    if (knockSpeed < 40) {
+      this.boarderAI();
+    } else {
+      this.borderPushX = 0;
+      this.borderPushY = 0;
+    }
+
+    // Rotate (spin) and move forward along current heading
+    this.angle += (this.spinSpeed * Math.PI / 180) * dt;
+    this.x += Math.cos(this.angle) * this.speed * dt;
+    this.y += Math.sin(this.angle) * this.speed * dt;
+
+    // Border AI nudge applied on top of normal movement
+    this.x += this.borderPushX * 100 * dt;
+    this.y += this.borderPushY * 100 * dt;
+
+    // Knockback impulse from being shoved by the Champion, decaying out
+    // over roughly half a second so a solid hit reliably carries a
+    // Challenger across the border margin and off the edge.
+    this.x += this.knockVX * dt;
+    this.y += this.knockVY * dt;
+    this.knockVX *= 0.9;
+    this.knockVY *= 0.9;
+
+    // Also check right after this frame's own movement, in case normal
+    // movement (not just a collision push) carried it out of bounds.
+    this.defeatCheck();
+  }
+
+  // ---- Defeat function: "When the actor is updated" ----------------------
+  // "If x of this < 0 OR x of this > scene width  -> score+1, remove
+  //  else if y of this < 0 OR y of this > scene height -> score+1, remove"
+  defeatCheck() {
+    if (this.x < 0 || this.x > W) {
+      game.score += 1;
+      popups.push({ x: this.x < 0 ? 10 : W - 10, y: this.y, life: 0.6 });
+      this.remove();
+    } else if (this.y < 0 || this.y > H) {
+      game.score += 1;
+      popups.push({ x: this.x, y: this.y < 0 ? 10 : H - 10, life: 0.6 });
+      this.remove();
+    }
+  }
+
+  remove() {
+    this.removed = true;
+    clearTimeout(this._directionTimer);
+    challengers = challengers.filter(c => c !== this);
+  }
+
+  draw() {
+    if (this.removed) return;
+    ctx.save();
+    ctx.translate(this.x, this.y);
+    ctx.rotate(this.angle);
+    ctx.beginPath();
+    ctx.fillStyle = '#ff5c5c';
+    ctx.arc(0, 0, this.radius, 0, Math.PI * 2);
+    ctx.fill();
+    // little "nose" so spin is visible
+    ctx.beginPath();
+    ctx.moveTo(this.radius, 0);
+    ctx.lineTo(this.radius - 8, -6);
+    ctx.lineTo(this.radius - 8, 6);
+    ctx.closePath();
+    ctx.fillStyle = '#7a1414';
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+/* =========================================================================
+   Collision — "Collide with the challengers to push them out of the level"
+   Simple circle-vs-circle knockback so the Champion can shove Challengers.
+   ========================================================================= */
+function resolveCollisions() {
+  for (const c of challengers) {
+    const dx = c.x - champion.x;
+    const dy = c.y - champion.y;
+    const dist = Math.hypot(dx, dy);
+    const minDist = c.radius + champion.radius;
+    if (dist < minDist && dist > 0) {
+      const overlap = minDist - dist;
+      const nx = dx / dist, ny = dy / dist;
+      // separate them so they don't stay stuck inside each other...
+      c.x += nx * overlap;
+      c.y += ny * overlap;
+      // ...then give a real shove: a decaying knockback impulse strong
+      // enough to overpower Border AI and carry the Challenger past the
+      // edge, instead of a one-frame nudge that barely moved it.
+      const KNOCK_STRENGTH = 900;
+      c.knockVX = nx * KNOCK_STRENGTH;
+      c.knockVY = ny * KNOCK_STRENGTH;
+    }
+  }
+}
+
+/* =========================================================================
+   Scene management — [A New Level]
+   ========================================================================= */
+function goToScene(levelNum) {
+  game.level = levelNum;
+  champion = new Champion();
+  challengers = [];
+  const count = LEVELS[levelNum].challengers;
+  for (let i = 0; i < count; i++) {
+    challengers.push(spawnChallenger());
+  }
+}
+
+function spawnChallenger() {
+  // keep spawns away from dead-center so they don't start on the champion
+  let x, y;
+  do {
+    x = rand(60, W - 60);
+    y = rand(60, H - 60);
+  } while (Math.hypot(x - W / 2, y - H / 2) < 100);
+  return new Challenger(x, y);
+}
+
+function rand(min, max) {
+  return Math.random() * (max - min) + min;
+}
+
+/* =========================================================================
+   Input — click/tap sets the Champion's move target
+   ========================================================================= */
+function pointerToCanvas(evt) {
+  const rect = canvas.getBoundingClientRect();
+  const clientX = evt.touches ? evt.touches[0].clientX : evt.clientX;
+  const clientY = evt.touches ? evt.touches[0].clientY : evt.clientY;
+  return {
+    x: (clientX - rect.left) * (canvas.width / rect.width),
+    y: (clientY - rect.top) * (canvas.height / rect.height),
+  };
+}
+canvas.addEventListener('mousedown', e => {
+  const p = pointerToCanvas(e);
+  champion.setTarget(p.x, p.y);
+});
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault();
+  const p = pointerToCanvas(e);
+  champion.setTarget(p.x, p.y);
+}, { passive: false });
+
+/* =========================================================================
+   Countdown timer — "Every 1 seconds"
+   ========================================================================= */
+setInterval(() => champion.countdownTick(), 1000);
+
+/* =========================================================================
+   Main loop
+   ========================================================================= */
+function loop(now) {
+  const dt = Math.min((now - lastTime) / 1000, 0.05);
+  lastTime = now;
+
+  champion.update(dt);
+  for (const c of [...challengers]) c.update(dt);
+  resolveCollisions();
+  champion.checkWin();
+
+  ctx.clearRect(0, 0, W, H);
+  for (const c of challengers) c.draw();
+  champion.draw();
+  champion.drawLabels();
+
+  // Draw and fade the "+1" knockout popups
+  ctx.textAlign = 'center';
+  ctx.font = 'bold 22px Segoe UI';
+  for (const p of popups) {
+    ctx.globalAlpha = Math.max(0, p.life / 0.6);
+    ctx.fillStyle = '#ffdd55';
+    ctx.fillText('+1', p.x, p.y - (0.6 - p.life) * 40);
+    p.life -= dt;
+  }
+  ctx.globalAlpha = 1;
+  popups = popups.filter(p => p.life > 0);
+
+  requestAnimationFrame(loop);
+}
+
+/* ---- Boot: start on Level 1, exactly like the lesson's initial state --- */
+goToScene(1);
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
